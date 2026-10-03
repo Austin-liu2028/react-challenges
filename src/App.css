@@ -1,13 +1,25 @@
+.schedule-page {
+  padding: 0.25rem 0 0 0.75rem;
+}
 
-@theme {
-  --animate-logo-spin: logo-spin infinite 20s linear;
+h1 {
+  margin: 0;
+  font-size: clamp(2.7rem, 4vw, 4rem);
+  line-height: 1.1;
+  font-weight: 700;
+  font-family: Georgia, "Times New Roman", serif;
+}
 
-  @keyframes logo-spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
+.course-list {
+  margin-top: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.course-item {
+  margin: 0;
+  font-size: clamp(1.2rem, 2.2vw, 2.25rem);
+  line-height: 1.4;
+  font-family: Georgia, "Times New Roman", serif;
+  color: #111;
 }
