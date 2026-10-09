@@ -26,7 +26,9 @@ const App = () => {
   }
 
   const { title, courses } = schedule;
-  const courseList = Object.values(courses);
+  const courseList: Course[] = Object.keys(courses).map(
+  (key) => courses[key]
+);
 
   return (
     <main className="p-3">
