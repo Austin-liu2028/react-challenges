@@ -19,6 +19,15 @@ const terms: Term[] = ['Fall', 'Winter', 'Spring'];
 const App = () => {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [selectedTerm, setSelectedTerm] = useState<Term>('Fall');
+  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+
+  const toggleCourse = (courseId: string) => {
+    setSelectedCourses((selected) =>
+      selected.indexOf(courseId) !== -1
+        ? selected.filter((id) => id !== courseId)
+        : [...selected, courseId]
+    );
+  };
 
   useEffect(() => {
     fetch('https://courses.cs.northwestern.edu/394/guides/data/cs-courses.php')
@@ -32,9 +41,10 @@ const App = () => {
 
   const { title, courses } = schedule;
 
-  const courseList: Course[] = Object.keys(courses).map(
-    (key) => courses[key]
-  );
+  const courseList = Object.keys(courses).map((id) => ({
+    id,
+    ...courses[id],
+  }));
 
   const filteredCourses = courseList.filter(
     (course) => course.term === selectedTerm
@@ -68,11 +78,21 @@ const App = () => {
       </div>
 
       <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {filteredCourses.map(
-          ({ term, number, meets, title: courseTitle }) => (
-            <article
-              key={`${term}-${number}`}
-              className="flex min-h-40 flex-col rounded-lg border border-gray-300 p-4"
+        {filteredCourses.map(({ id, term, number, meets, title: courseTitle }) => {
+          const isSelected = selectedCourses.indexOf(id) !== -1;
+
+          return (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => toggleCourse(id)}
+              className={[
+                'flex min-h-40 w-full flex-col rounded-lg border p-4 text-left transition-all',
+                isSelected
+                  ? 'border-blue-600 bg-blue-100 shadow-md ring-2 ring-blue-200'
+                  : 'border-gray-300 bg-white hover:bg-gray-50',
+              ].join(' ')}
             >
               <h2 className="text-lg font-medium">
                 {term} CS {number}
@@ -83,9 +103,9 @@ const App = () => {
               <footer className="mt-auto border-t border-gray-300 pt-3 text-sm">
                 {meets}
               </footer>
-            </article>
-          )
-        )}
+            </button>
+          );
+        })}
       </div>
     </main>
   );
