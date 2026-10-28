@@ -20,6 +20,7 @@ const App = () => {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [selectedTerm, setSelectedTerm] = useState<Term>('Fall');
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [showPlan, setShowPlan] = useState(false);
 
   const toggleCourse = (courseId: string) => {
     setSelectedCourses((selected) =>
@@ -50,31 +51,45 @@ const App = () => {
     (course) => course.term === selectedTerm
   );
 
+  const selectedCourseList = courseList.filter(
+    (course) => selectedCourses.indexOf(course.id) !== -1
+  );
+
   return (
     <main className="p-3">
       <h1 className="mb-4 text-3xl font-bold">{title}</h1>
 
-      <div className="mb-4 flex gap-2">
-        {terms.map((term) => {
-          const isSelected = term === selectedTerm;
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex gap-2">
+          {terms.map((term) => {
+            const isSelected = term === selectedTerm;
 
-          return (
-            <button
-              key={term}
-              type="button"
-              aria-pressed={isSelected}
-              onClick={() => setSelectedTerm(term)}
-              className={[
-                'rounded border px-4 py-2 transition-colors',
-                isSelected
-                  ? 'border-blue-600 bg-blue-600 text-white'
-                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100',
-              ].join(' ')}
-            >
-              {term}
-            </button>
-          );
-        })}
+            return (
+              <button
+                key={term}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => setSelectedTerm(term)}
+                className={[
+                  'rounded border px-4 py-2 transition-colors',
+                  isSelected
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100',
+                ].join(' ')}
+              >
+                {term}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowPlan(true)}
+          className="rounded border border-gray-300 px-4 py-2 hover:bg-gray-100"
+        >
+          Course Plan
+        </button>
       </div>
 
       <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -107,6 +122,52 @@ const App = () => {
           );
         })}
       </div>
+
+      {showPlan && (
+        <div
+          className="fixed inset-0 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setShowPlan(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-lg bg-white p-6 shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-2xl font-bold">Course Plan</h2>
+
+              <button
+                type="button"
+                onClick={() => setShowPlan(false)}
+                className="rounded border px-3 py-1"
+              >
+                Close
+              </button>
+            </div>
+
+            {selectedCourseList.length === 0 ? (
+              <p>
+                No courses selected. Click a course card to add it to your course plan.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {selectedCourseList.map((course) => (
+                  <div
+                    key={course.id}
+                    className="rounded border border-gray-300 p-3"
+                  >
+                    <h3 className="font-medium">
+                      {course.term} CS {course.number}
+                    </h3>
+
+                    <p>{course.title}</p>
+                    <p className="text-sm">{course.meets}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 };
