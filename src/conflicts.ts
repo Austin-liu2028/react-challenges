@@ -1,9 +1,9 @@
-export type Course = {
+type Course = {
   term: string;
   meets: string;
 };
 
-export const getDays = (meets: string): string[] => {
+const getDays = (meets: string): string[] => {
   if (meets === '') {
     return [];
   }
@@ -13,7 +13,7 @@ export const getDays = (meets: string): string[] => {
   return dayPart.match(/M|Tu|W|Th|F/g) || [];
 };
 
-export const getTimes = (meets: string) => {
+const getTimes = (meets: string) => {
   if (meets === '') {
     return null;
   }
@@ -29,20 +29,20 @@ export const getTimes = (meets: string) => {
   return { start, end };
 };
 
-export const daysOverlap = (meets1: string, meets2: string) => {
+const daysOverlap = (meets1: string, meets2: string) => {
   const days1 = getDays(meets1);
   const days2 = getDays(meets2);
 
   return days1.some((day) => days2.indexOf(day) !== -1);
 };
 
-export const timeToMinutes = (time: string) => {
+const timeToMinutes = (time: string) => {
   const [hour, minute] = time.split(':').map(Number);
 
   return hour * 60 + minute;
 };
 
-export const timesOverlap = (meets1: string, meets2: string) => {
+const timesOverlap = (meets1: string, meets2: string) => {
   const times1 = getTimes(meets1);
   const times2 = getTimes(meets2);
 
