@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
+import { hasConflict, type Course } from './conflicts';
 
-type Course = {
-  term: string;
+type CourseRecord = Course & {
   number: string;
-  meets: string;
   title: string;
 };
 
@@ -11,7 +10,7 @@ type Term = 'Fall' | 'Winter' | 'Spring';
 
 type Schedule = {
   title: string;
-  courses: Record<string, Course>;
+  courses: Record<string, CourseRecord>;
 };
 
 const terms: Term[] = ['Fall', 'Winter', 'Spring'];
@@ -23,11 +22,27 @@ const App = () => {
   const [showPlan, setShowPlan] = useState(false);
 
   const toggleCourse = (courseId: string) => {
-    setSelectedCourses((selected) =>
-      selected.indexOf(courseId) !== -1
-        ? selected.filter((id) => id !== courseId)
-        : [...selected, courseId]
-    );
+    setSelectedCourses((selected) => {
+      if (selected.indexOf(courseId) !== -1) {
+        return selected.filter((id) => id !== courseId);
+      }
+
+      const course = schedule?.courses[courseId];
+
+      if (!course) {
+        return selected;
+      }
+
+      const hasSelectedConflict = selected.some(
+        (selectedId) => hasConflict(course, schedule!.courses[selectedId])
+      );
+
+      if (hasSelectedConflict) {
+        return selected;
+      }
+
+      return [...selected, courseId];
+    });
   };
 
   useEffect(() => {
@@ -95,18 +110,28 @@ const App = () => {
       <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {filteredCourses.map(({ id, term, number, meets, title: courseTitle }) => {
           const isSelected = selectedCourses.indexOf(id) !== -1;
+          const unavailable =
+            !isSelected &&
+            selectedCourses.some(
+              (selectedId) =>
+                hasConflict(courses[id], courses[selectedId]) && selectedId !== id
+            );
 
           return (
             <button
               key={id}
               type="button"
               aria-pressed={isSelected}
+              aria-disabled={unavailable}
+              disabled={unavailable}
               onClick={() => toggleCourse(id)}
               className={[
                 'flex min-h-40 w-full flex-col rounded-lg border p-4 text-left transition-all',
                 isSelected
                   ? 'border-blue-600 bg-blue-100 shadow-md ring-2 ring-blue-200'
-                  : 'border-gray-300 bg-white hover:bg-gray-50',
+                  : unavailable
+                    ? 'cursor-not-allowed border-red-300 bg-red-50 text-red-500 opacity-60'
+                    : 'border-gray-300 bg-white hover:bg-gray-50',
               ].join(' ')}
             >
               <h2 className="text-lg font-medium">
@@ -116,7 +141,7 @@ const App = () => {
               <p className="mt-2">{courseTitle}</p>
 
               <footer className="mt-auto border-t border-gray-300 pt-3 text-sm">
-                {meets}
+                {meets || 'No meeting time'}
               </footer>
             </button>
           );
