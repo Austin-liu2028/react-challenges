@@ -1,8 +1,8 @@
 
 import { initializeApp } from 'firebase/app';
+import { getDatabase } from 'firebase/database';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
-
 
 const firebaseConfig = {
   apiKey: 'AIzaSyCX-KOUYunwA7hoqPQ3N3QNCcNBVpkK1-Q',
@@ -17,3 +17,7 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+const databaseURL = import.meta.env.VITE_FIREBASE_DATABASE_URL?.trim();
+
+export const realtimeDb = databaseURL ? getDatabase(app, databaseURL) : null;

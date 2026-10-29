@@ -1,8 +1,9 @@
 import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
+import { get, ref, set } from 'firebase/database';
 
-import { auth, db } from './firebase';
+import { auth, db, realtimeDb } from './firebase';
 import { hasConflict } from './conflicts';
 
 type Course = {
@@ -63,11 +64,32 @@ const isValidMeetingTime = (value: string) => {
   return isValidMeetingDays(match[1]);
 };
 
-const hasDuplicateCourse = (courses: Record<string, Course>, course: Course) =>
+const getFormValidationError = (values: CourseFormState) => {
+  if (!values.number.trim()) {
+    return 'Course number is required.';
+  }
+
+  if (!values.title.trim()) {
+    return 'Course title is required.';
+  }
+
+  if (!isValidMeetingTime(values.meets)) {
+    return 'Meeting time must use a valid format such as MWF 11:00-11:50 or TuTh 14:00-15:20.';
+  }
+
+  return '';
+};
+
+const hasDuplicateCourse = (
+  courses: Record<string, Course>,
+  course: Course,
+  excludedCourseId?: string
+) =>
   Object.keys(courses).some((courseId) => {
     const existingCourse = courses[courseId];
 
     return (
+      courseId !== excludedCourseId &&
       existingCourse.term === course.term &&
       existingCourse.number.trim().toLowerCase() === course.number.trim().toLowerCase() &&
       existingCourse.title.trim().toLowerCase() === course.title.trim().toLowerCase() &&
@@ -98,12 +120,46 @@ const getSavedCourseMap = async (uid: string) => {
   }, {});
 };
 
+const getSavedCourseEdits = async (uid: string) => {
+  if (!realtimeDb) {
+    return {};
+  }
+
+  const snapshot = await get(ref(realtimeDb, `users/${uid}/courseEdits`));
+  const savedEdits = snapshot.val() as Record<string, Partial<Course>> | null;
+
+  return Object.keys(savedEdits ?? {}).reduce<Record<string, Course>>(
+    (accumulator, courseId) => {
+      const savedCourse = savedEdits?.[courseId];
+
+      if (
+        savedCourse &&
+        typeof savedCourse.term === 'string' &&
+        typeof savedCourse.number === 'string' &&
+        typeof savedCourse.title === 'string' &&
+        typeof savedCourse.meets === 'string'
+      ) {
+        accumulator[courseId] = {
+          term: savedCourse.term,
+          number: savedCourse.number,
+          title: savedCourse.title,
+          meets: savedCourse.meets,
+        };
+      }
+
+      return accumulator;
+    },
+    {}
+  );
+};
+
 const App = () => {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [selectedTerm, setSelectedTerm] = useState<Term>('Fall');
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [showPlan, setShowPlan] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [editingCourseId, setEditingCourseId] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<CourseFormState>(defaultFormState);
   const [formError, setFormError] = useState('');
   const [databaseError, setDatabaseError] = useState('');
@@ -115,6 +171,9 @@ const App = () => {
     let active = true;
 
     const initializeScheduler = async () => {
+      let savedCourses: Record<string, Course> = {};
+      let savedEdits: Record<string, Course> = {};
+
       try {
         const response = await fetch(
           'https://courses.cs.northwestern.edu/394/guides/data/cs-courses.php'
@@ -139,29 +198,14 @@ const App = () => {
         const message =
           error instanceof Error ? error.message : 'The course catalog could not be loaded.';
 
-        setDatabaseError(message);
+        setDatabaseError(`Could not load the course catalog: ${message}`);
       }
 
+      let uid: string | null = null;
+
       try {
-        const userCredential = await signInAnonymously(auth);
-        const uid = userCredential.user.uid;
-        const savedCourses = await getSavedCourseMap(uid);
-
-        if (!active) {
-          return;
-        }
-
-        setSchedule((currentSchedule) => {
-          const previousCourses = currentSchedule?.courses ?? {};
-
-          return {
-            title: currentSchedule?.title ?? 'Course Schedule',
-            courses: {
-              ...previousCourses,
-              ...savedCourses,
-            },
-          };
-        });
+        const user = auth.currentUser ?? (await signInAnonymously(auth)).user;
+        uid = user.uid;
       } catch (error) {
         if (!active) {
           return;
@@ -170,13 +214,74 @@ const App = () => {
         const message =
           error instanceof Error
             ? error.message
-            : 'Anonymous sign-in or saved-course loading failed.';
+            : 'Anonymous sign-in failed.';
 
         setAuthError(`Authentication failed: ${message}`);
-      } finally {
-        if (active) {
-          setIsLoading(false);
+      }
+
+      if (uid) {
+        try {
+          savedCourses = await getSavedCourseMap(uid);
+        } catch (error) {
+          if (!active) {
+            return;
+          }
+
+          const message =
+            error instanceof Error ? error.message : 'Saved Firestore courses could not be loaded.';
+
+          setDatabaseError((current) =>
+            [current, `Could not load saved Firestore courses: ${message}`]
+              .filter(Boolean)
+              .join(' ')
+          );
         }
+
+        if (realtimeDb) {
+          try {
+            savedEdits = await getSavedCourseEdits(uid);
+          } catch (error) {
+            if (!active) {
+              return;
+            }
+
+            const message =
+              error instanceof Error
+                ? error.message
+                : 'Saved Realtime Database edits could not be loaded.';
+
+            setDatabaseError((current) =>
+              [current, `Could not load saved Realtime Database edits: ${message}`]
+                .filter(Boolean)
+                .join(' ')
+            );
+          }
+        } else {
+          setDatabaseError((current) =>
+            [
+              current,
+              'Realtime Database is not configured. Set VITE_FIREBASE_DATABASE_URL to enable course edits.',
+            ]
+              .filter(Boolean)
+              .join(' ')
+          );
+        }
+      }
+
+      if (active) {
+        setSchedule((currentSchedule) => {
+          const previousCourses = currentSchedule?.courses ?? {};
+
+          return {
+            title: currentSchedule?.title ?? 'Course Schedule',
+            courses: {
+              ...previousCourses,
+              ...savedCourses,
+              ...savedEdits,
+            },
+          };
+        });
+        setIsLoading(false);
       }
     };
 
@@ -213,6 +318,15 @@ const App = () => {
     () => courseList.filter((course) => selectedCourses.indexOf(course.id) !== -1),
     [courseList, selectedCourses]
   );
+
+  const editingCourse = editingCourseId ? schedule?.courses[editingCourseId] : undefined;
+  const formValidationError = getFormValidationError(formValues);
+  const hasFormChanges = editingCourse
+    ? formValues.term !== editingCourse.term ||
+      formValues.number.trim() !== editingCourse.number.trim() ||
+      formValues.title.trim() !== editingCourse.title.trim() ||
+      formValues.meets.trim() !== editingCourse.meets.trim()
+    : editingCourseId === null;
 
   const unavailableCourseIds = useMemo(() => {
     const ids = new Set<string>();
@@ -284,8 +398,34 @@ const App = () => {
     });
   };
 
+  const openAddForm = () => {
+    setEditingCourseId(null);
+    setFormValues(defaultFormState);
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const openEditForm = (courseId: string) => {
+    const course = schedule?.courses[courseId];
+
+    if (!course) {
+      return;
+    }
+
+    setEditingCourseId(courseId);
+    setFormValues({
+      term: course.term as Term,
+      number: course.number,
+      title: course.title,
+      meets: course.meets,
+    });
+    setFormError('');
+    setShowForm(true);
+  };
+
   const closeForm = () => {
     setShowForm(false);
+    setEditingCourseId(null);
     setFormError('');
     setFormValues(defaultFormState);
   };
@@ -294,24 +434,18 @@ const App = () => {
     event.preventDefault();
     setFormError('');
 
+    if (formValidationError) {
+      setFormError(formValidationError);
+      return;
+    }
+
+    if (editingCourseId && !hasFormChanges) {
+      return;
+    }
+
     const trimmedNumber = formValues.number.trim();
     const trimmedTitle = formValues.title.trim();
     const trimmedMeets = formValues.meets.trim();
-
-    if (!trimmedNumber) {
-      setFormError('Course number is required.');
-      return;
-    }
-
-    if (!trimmedTitle) {
-      setFormError('Course title is required.');
-      return;
-    }
-
-    if (!isValidMeetingTime(trimmedMeets)) {
-      setFormError('Meeting time must use a valid format such as MWF 11:00-11:50 or TuTh 14:00-15:20.');
-      return;
-    }
 
     const nextCourse: Course = {
       term: formValues.term,
@@ -320,9 +454,24 @@ const App = () => {
       meets: trimmedMeets,
     };
 
-    if (schedule && hasDuplicateCourse(schedule.courses, nextCourse)) {
+    if (
+      schedule &&
+      hasDuplicateCourse(schedule.courses, nextCourse, editingCourseId ?? undefined)
+    ) {
       setFormError('This course already exists in the schedule.');
       return;
+    }
+
+    if (editingCourseId && selectedCourses.indexOf(editingCourseId) !== -1) {
+      const selectedConflict = selectedCourseList.some(
+        (course) =>
+          course.id !== editingCourseId && hasConflict(nextCourse, course)
+      );
+
+      if (selectedConflict) {
+        setFormError('This change conflicts with another selected course.');
+        return;
+      }
     }
 
     const uid = auth.currentUser?.uid;
@@ -335,22 +484,46 @@ const App = () => {
     setIsSubmitting(true);
 
     try {
-      const docRef = await addDoc(collection(db, 'users', uid, 'courses'), nextCourse);
+      if (editingCourseId) {
+        if (!realtimeDb) {
+          throw new Error(
+            'Realtime Database is not configured. Set VITE_FIREBASE_DATABASE_URL before editing courses.'
+          );
+        }
 
-      setSchedule((currentSchedule) => {
-        const previousCourses = currentSchedule?.courses ?? {};
+        await set(
+          ref(realtimeDb, `users/${uid}/courseEdits/${editingCourseId}`),
+          nextCourse
+        );
 
-        return {
-          title: currentSchedule?.title ?? 'Course Schedule',
-          courses: {
-            ...previousCourses,
-            [docRef.id]: nextCourse,
-          },
-        };
-      });
+        setSchedule((currentSchedule) => {
+          const previousCourses = currentSchedule?.courses ?? {};
 
-      setFormValues(defaultFormState);
-      setShowForm(false);
+          return {
+            title: currentSchedule?.title ?? 'Course Schedule',
+            courses: {
+              ...previousCourses,
+              [editingCourseId]: nextCourse,
+            },
+          };
+        });
+      } else {
+        const docRef = await addDoc(collection(db, 'users', uid, 'courses'), nextCourse);
+
+        setSchedule((currentSchedule) => {
+          const previousCourses = currentSchedule?.courses ?? {};
+
+          return {
+            title: currentSchedule?.title ?? 'Course Schedule',
+            courses: {
+              ...previousCourses,
+              [docRef.id]: nextCourse,
+            },
+          };
+        });
+      }
+
+      closeForm();
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'The course could not be saved.';
@@ -372,8 +545,12 @@ const App = () => {
       <h1 className="mb-4 text-3xl font-bold">{title}</h1>
 
       {(databaseError || authError) && (
-        <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-red-700">
-          {databaseError || authError}
+        <div
+          role="alert"
+          className="mb-4 space-y-1 rounded border border-red-300 bg-red-50 p-3 text-red-700"
+        >
+          {databaseError && <p>{databaseError}</p>}
+          {authError && <p>{authError}</p>}
         </div>
       )}
 
@@ -404,10 +581,10 @@ const App = () => {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => setShowForm((current) => !current)}
+            onClick={openAddForm}
             className="rounded border border-gray-300 bg-white px-4 py-2 hover:bg-gray-100"
           >
-            {showForm ? 'Close Form' : 'Add Course'}
+            Add Course
           </button>
 
           <button
@@ -431,7 +608,9 @@ const App = () => {
             className="w-full max-w-xl rounded-lg border border-gray-300 bg-white p-6 shadow-lg"
           >
             <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-2xl font-bold">Add a Course</h2>
+              <h2 className="text-2xl font-bold">
+                {editingCourseId ? 'Edit Course' : 'Add a Course'}
+              </h2>
 
               <button
                 type="button"
@@ -493,9 +672,9 @@ const App = () => {
               </label>
             </div>
 
-            {formError && (
+            {(formError || formValidationError) && (
               <p className="mt-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
-                {formError}
+                {formError || formValidationError}
               </p>
             )}
 
@@ -510,10 +689,19 @@ const App = () => {
 
               <button
                 type="submit"
-                disabled={isSubmitting || isLoading}
+                disabled={
+                  isSubmitting ||
+                  isLoading ||
+                  Boolean(formValidationError) ||
+                  (editingCourseId !== null && !hasFormChanges)
+                }
                 className="rounded border border-blue-600 bg-blue-600 px-4 py-2 text-white disabled:cursor-not-allowed disabled:bg-blue-300"
               >
-                {isSubmitting ? 'Saving...' : 'Save Course'}
+                {isSubmitting
+                  ? 'Saving...'
+                  : editingCourseId
+                    ? 'Submit'
+                    : 'Save Course'}
               </button>
             </div>
           </form>
@@ -526,14 +714,10 @@ const App = () => {
           const isUnavailable = unavailableCourseIds.has(id);
 
           return (
-            <button
+            <article
               key={id}
-              type="button"
-              aria-pressed={isSelected}
-              disabled={isUnavailable && !isSelected}
-              onClick={() => toggleCourse(id)}
               className={[
-                'flex min-h-40 w-full flex-col rounded-lg border p-4 text-left transition-all',
+                'flex min-h-40 flex-col rounded-lg border transition-all',
                 isSelected
                   ? 'border-blue-600 bg-blue-100 shadow-md ring-2 ring-blue-200'
                   : isUnavailable
@@ -541,16 +725,34 @@ const App = () => {
                     : 'border-gray-300 bg-white hover:bg-gray-50',
               ].join(' ')}
             >
-              <h2 className="text-lg font-medium">
-                {term} CS {number}
-              </h2>
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                disabled={isUnavailable && !isSelected}
+                onClick={() => toggleCourse(id)}
+                className="flex w-full flex-1 flex-col p-4 text-left disabled:cursor-not-allowed"
+              >
+                <h2 className="text-lg font-medium">
+                  {term} CS {number}
+                </h2>
 
-              <p className="mt-2">{courseTitle}</p>
+                <p className="mt-2">{courseTitle}</p>
 
-              <footer className="mt-auto border-t border-gray-300 pt-3 text-sm">
-                {meets || 'No meeting time'}
-              </footer>
-            </button>
+                <footer className="mt-auto border-t border-gray-300 pt-3 text-sm">
+                  {meets || 'No meeting time'}
+                </footer>
+              </button>
+
+              <div className="flex justify-end border-t border-gray-300 px-4 py-2">
+                <button
+                  type="button"
+                  onClick={() => openEditForm(id)}
+                  className="rounded border border-gray-300 px-3 py-1 text-sm hover:bg-white"
+                >
+                  Edit
+                </button>
+              </div>
+            </article>
           );
         })}
       </div>
