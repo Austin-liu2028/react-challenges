@@ -6,7 +6,7 @@
       "$uid": {
         "courseEdits": {
           ".read": "auth != null && auth.uid === $uid",
-          ".write": "auth != null && auth.uid === $uid",
+          ".write": "auth != null && auth.uid === $uid && auth.token.firebase.sign_in_provider === 'google.com'",
           "$courseId": {
             ".validate": "newData.hasChildren(['term', 'number', 'title', 'meets'])",
             "term": {

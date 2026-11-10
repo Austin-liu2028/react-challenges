@@ -1,0 +1,26 @@
+rules_version = '2';
+// users/{uid}/courses/{courseId}: term, number, title, meets (required strings).
+// Existing anonymous owners retain read access. Only Google owners may add.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function isValidCourse(data) {
+      return data.keys().hasAll(['term', 'number', 'title', 'meets'])
+        && data.keys().hasOnly(['term', 'number', 'title', 'meets'])
+        && data.term in ['Fall', 'Winter', 'Spring']
+        && data.number is string && data.number.size() > 0 && data.number.size() <= 200
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 1000
+        && data.meets is string && data.meets.size() > 0 && data.meets.size() <= 200;
+    }
+    match /users/{uid}/courses/{courseId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && isValidCourse(request.resource.data);
+      // Course edits are persisted in Realtime Database; no client updates/deletes.
+      allow update, delete: if false;
+    }
+  }
+}

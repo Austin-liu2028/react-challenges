@@ -1,10 +1,19 @@
 import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
-import { signInAnonymously } from 'firebase/auth';
+import {
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  linkWithPopup,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { get, ref, set } from 'firebase/database';
 
 import { auth, db, realtimeDb } from './firebase';
 import { hasConflict } from './conflicts';
+import { AuthBanner } from './components/AuthBanner';
+import { isGoogleUser, requireGoogleUser } from './authentication';
 
 type Course = {
   term: string;
@@ -154,7 +163,16 @@ const getSavedCourseEdits = async (uid: string) => {
 };
 
 const App = () => {
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [catalog, setCatalog] = useState<Schedule | null>(null);
+  const [savedCourses, setSavedCourses] = useState<Record<string, Course>>({});
+  const [savedEdits, setSavedEdits] = useState<Record<string, Course>>({});
+  const schedule = useMemo(() => catalog ? {
+    title: catalog.title,
+    courses: { ...catalog.courses, ...savedCourses, ...savedEdits },
+  } : null, [catalog, savedCourses, savedEdits]);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [selectedTerm, setSelectedTerm] = useState<Term>('Fall');
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [showPlan, setShowPlan] = useState(false);
@@ -167,130 +185,98 @@ const App = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
+  useEffect(() => onAuthStateChanged(auth, (user) => {
+    setCurrentUser(user);
+    setAuthReady(true);
+    setSavedCourses({});
+    setSavedEdits({});
+    setSelectedCourses([]);
+    setShowForm(false);
+    setEditingCourseId(null);
+    setFormError('');
+  }, (error) => {
+    setAuthError(error.message);
+    setAuthReady(true);
+  }), []);
+
   useEffect(() => {
     let active = true;
-
-    const initializeScheduler = async () => {
-      let savedCourses: Record<string, Course> = {};
-      let savedEdits: Record<string, Course> = {};
-
+    const loadCatalog = async () => {
       try {
         const response = await fetch(
           'https://courses.cs.northwestern.edu/394/guides/data/cs-courses.php'
         );
-
-        if (!response.ok) {
-          throw new Error('The course catalog did not load.');
-        }
-
+        if (!response.ok) throw new Error('The course catalog did not load.');
         const data = (await response.json()) as Schedule;
-
-        if (!active) {
-          return;
-        }
-
-        setSchedule(data);
+        if (active) setCatalog(data);
       } catch (error) {
-        if (!active) {
-          return;
+        if (active) {
+          setDatabaseError(`Could not load the course catalog: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          setCatalog({ title: 'Course Schedule', courses: {} });
         }
-
-        const message =
-          error instanceof Error ? error.message : 'The course catalog could not be loaded.';
-
-        setDatabaseError(`Could not load the course catalog: ${message}`);
-      }
-
-      let uid: string | null = null;
-
-      try {
-        const user = auth.currentUser ?? (await signInAnonymously(auth)).user;
-        uid = user.uid;
-      } catch (error) {
-        if (!active) {
-          return;
-        }
-
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Anonymous sign-in failed.';
-
-        setAuthError(`Authentication failed: ${message}`);
-      }
-
-      if (uid) {
-        try {
-          savedCourses = await getSavedCourseMap(uid);
-        } catch (error) {
-          if (!active) {
-            return;
-          }
-
-          const message =
-            error instanceof Error ? error.message : 'Saved Firestore courses could not be loaded.';
-
-          setDatabaseError((current) =>
-            [current, `Could not load saved Firestore courses: ${message}`]
-              .filter(Boolean)
-              .join(' ')
-          );
-        }
-
-        if (realtimeDb) {
-          try {
-            savedEdits = await getSavedCourseEdits(uid);
-          } catch (error) {
-            if (!active) {
-              return;
-            }
-
-            const message =
-              error instanceof Error
-                ? error.message
-                : 'Saved Realtime Database edits could not be loaded.';
-
-            setDatabaseError((current) =>
-              [current, `Could not load saved Realtime Database edits: ${message}`]
-                .filter(Boolean)
-                .join(' ')
-            );
-          }
-        } else {
-          setDatabaseError((current) =>
-            [
-              current,
-              'Realtime Database is not configured. Set VITE_FIREBASE_DATABASE_URL to enable course edits.',
-            ]
-              .filter(Boolean)
-              .join(' ')
-          );
-        }
-      }
-
-      if (active) {
-        setSchedule((currentSchedule) => {
-          const previousCourses = currentSchedule?.courses ?? {};
-
-          return {
-            title: currentSchedule?.title ?? 'Course Schedule',
-            courses: {
-              ...previousCourses,
-              ...savedCourses,
-              ...savedEdits,
-            },
-          };
-        });
-        setIsLoading(false);
+      } finally {
+        if (active) setIsLoading(false);
       }
     };
-
-    void initializeScheduler();
-
-    return () => {
-      active = false;
-    };
+    void loadCatalog();
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!authReady || !currentUser) return;
+    const loadSavedCourses = async () => {
+      try {
+        const courses = await getSavedCourseMap(currentUser.uid);
+        if (active) setSavedCourses(courses);
+      } catch (error) {
+        if (active) setDatabaseError(`Could not load saved Firestore courses: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+      try {
+        if (!realtimeDb) throw new Error('Realtime Database is not configured. Set VITE_FIREBASE_DATABASE_URL to enable course edits.');
+        const edits = await getSavedCourseEdits(currentUser.uid);
+        if (active) setSavedEdits(edits);
+      } catch (error) {
+        if (active) setDatabaseError((previous) => [previous, `Could not load saved Realtime Database edits: ${error instanceof Error ? error.message : 'Unknown error'}`].filter(Boolean).join(' '));
+      }
+    };
+    void loadSavedCourses();
+    return () => { active = false; };
+  }, [authReady, currentUser]);
+
+  const handleSignIn = async () => {
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      const provider = new GoogleAuthProvider();
+      if (auth.currentUser?.isAnonymous) {
+        await linkWithPopup(auth.currentUser, provider);
+      } else {
+        await signInWithPopup(auth, provider);
+      }
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      setAuthError(code === 'auth/credential-already-in-use'
+        ? 'That Google account already exists. Your anonymous courses have been retained. Sign out to use the existing account.'
+        : `Google sign-in failed: ${error instanceof Error ? error.message : 'Please try again.'}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      await signOut(auth);
+    } catch (error) {
+      setAuthError(`Sign-out failed: ${error instanceof Error ? error.message : 'Please try again.'}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const canEdit = authReady && isGoogleUser(currentUser) && !authBusy;
 
   const courseList = useMemo(
     () => (schedule ? buildCourseList(schedule.courses) : []),
@@ -399,6 +385,7 @@ const App = () => {
   };
 
   const openAddForm = () => {
+    if (!canEdit) return;
     setEditingCourseId(null);
     setFormValues(defaultFormState);
     setFormError('');
@@ -406,6 +393,7 @@ const App = () => {
   };
 
   const openEditForm = (courseId: string) => {
+    if (!canEdit) return;
     const course = schedule?.courses[courseId];
 
     if (!course) {
@@ -433,6 +421,11 @@ const App = () => {
   const handleSubmitCourse = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError('');
+
+    if (!canEdit) {
+      setFormError('Sign in with Google to save courses.');
+      return;
+    }
 
     if (formValidationError) {
       setFormError(formValidationError);
@@ -474,16 +467,11 @@ const App = () => {
       }
     }
 
-    const uid = auth.currentUser?.uid;
-
-    if (!uid) {
-      setFormError('Please wait for authentication to finish before adding a course.');
-      return;
-    }
-
     setIsSubmitting(true);
 
     try {
+      const user = await requireGoogleUser();
+      const uid = user.uid;
       if (editingCourseId) {
         if (!realtimeDb) {
           throw new Error(
@@ -496,31 +484,13 @@ const App = () => {
           nextCourse
         );
 
-        setSchedule((currentSchedule) => {
-          const previousCourses = currentSchedule?.courses ?? {};
-
-          return {
-            title: currentSchedule?.title ?? 'Course Schedule',
-            courses: {
-              ...previousCourses,
-              [editingCourseId]: nextCourse,
-            },
-          };
-        });
+        if (auth.currentUser?.uid !== uid) return;
+        setSavedEdits((previous) => ({ ...previous, [editingCourseId]: nextCourse }));
       } else {
         const docRef = await addDoc(collection(db, 'users', uid, 'courses'), nextCourse);
 
-        setSchedule((currentSchedule) => {
-          const previousCourses = currentSchedule?.courses ?? {};
-
-          return {
-            title: currentSchedule?.title ?? 'Course Schedule',
-            courses: {
-              ...previousCourses,
-              [docRef.id]: nextCourse,
-            },
-          };
-        });
+        if (auth.currentUser?.uid !== uid) return;
+        setSavedCourses((previous) => ({ ...previous, [docRef.id]: nextCourse }));
       }
 
       closeForm();
@@ -534,23 +504,21 @@ const App = () => {
     }
   };
 
-  if (!schedule) {
-    return <p className="p-3">Loading...</p>;
-  }
-
-  const { title } = schedule;
+  const title = schedule?.title ?? 'Course Schedule';
 
   return (
     <main className="p-3">
+      <AuthBanner user={currentUser} loading={!authReady} busy={authBusy || isSubmitting}
+        error={authError} onSignIn={handleSignIn} onSignOut={handleSignOut} />
       <h1 className="mb-4 text-3xl font-bold">{title}</h1>
+      {isLoading && <p>Loading...</p>}
 
-      {(databaseError || authError) && (
+      {databaseError && (
         <div
           role="alert"
           className="mb-4 space-y-1 rounded border border-red-300 bg-red-50 p-3 text-red-700"
         >
           {databaseError && <p>{databaseError}</p>}
-          {authError && <p>{authError}</p>}
         </div>
       )}
 
@@ -579,13 +547,16 @@ const App = () => {
         </div>
 
         <div className="flex gap-2">
+          {canEdit && (
           <button
             type="button"
             onClick={openAddForm}
+            disabled={isLoading}
             className="rounded border border-gray-300 bg-white px-4 py-2 hover:bg-gray-100"
           >
             Add Course
           </button>
+          )}
 
           <button
             type="button"
@@ -690,6 +661,7 @@ const App = () => {
               <button
                 type="submit"
                 disabled={
+                  !canEdit ||
                   isSubmitting ||
                   isLoading ||
                   Boolean(formValidationError) ||
@@ -743,7 +715,7 @@ const App = () => {
                 </footer>
               </button>
 
-              <div className="flex justify-end border-t border-gray-300 px-4 py-2">
+              {canEdit && <div className="flex justify-end border-t border-gray-300 px-4 py-2">
                 <button
                   type="button"
                   onClick={() => openEditForm(id)}
@@ -751,7 +723,7 @@ const App = () => {
                 >
                   Edit
                 </button>
-              </div>
+              </div>}
             </article>
           );
         })}
