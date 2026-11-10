@@ -37,7 +37,7 @@ const changeUser = async (nextUser: User | null) => {
   });
 };
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   mocks.auth.currentUser = null;
   mocks.getDocs.mockResolvedValue({ docs: [] });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
@@ -77,16 +77,44 @@ it('clears private courses and edit controls on sign-out', async () => {
   expect(mocks.auth.currentUser).toBeNull();
 });
 
-it('retains the anonymous account when linking an existing Google credential fails', async () => {
-  const anonymous = user(true);
-  mocks.link.mockRejectedValue({ code: 'auth/credential-already-in-use' });
+it('signs into an existing Google account directly from an anonymous session', async () => {
   render(<App />);
-  await changeUser(anonymous);
+  await changeUser(user(true));
+  expect(screen.getByText('Not signed in')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Add Course' })).not.toBeInTheDocument();
+  mocks.popup.mockImplementation(async () => {
+    mocks.auth.currentUser = user();
+    mocks.listener?.(mocks.auth.currentUser);
+    return { user: mocks.auth.currentUser };
+  });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' })); });
+  expect(mocks.popup).toHaveBeenCalledOnce();
+  expect(mocks.link).not.toHaveBeenCalled();
+  expect(screen.getByText('Signed in as test@example.com')).toBeInTheDocument();
+  expect(screen.queryByText('Checking authentication...')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Add Course' })).toBeEnabled();
+});
+
+it('clears a failed popup error after a successful retry and sign-out', async () => {
+  render(<App />);
+  await changeUser(null);
+  mocks.popup.mockRejectedValueOnce(new Error('Popup closed'));
   fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
-  await screen.findByText(/That Google account already exists/);
-  expect(mocks.auth.currentUser).toBe(anonymous);
-  expect(mocks.popup).not.toHaveBeenCalled();
-  expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+  await screen.findByText('Google sign-in failed: Popup closed');
+  mocks.popup.mockImplementation(async () => {
+    mocks.auth.currentUser = user();
+    mocks.listener?.(mocks.auth.currentUser);
+    return { user: mocks.auth.currentUser };
+  });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' })); });
+  expect(screen.queryByText(/Google sign-in failed/)).not.toBeInTheDocument();
+  mocks.signOut.mockImplementation(async () => {
+    mocks.auth.currentUser = null;
+    mocks.listener?.(null);
+  });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign Out' })); });
+  expect(screen.getByText('Not signed in')).toBeInTheDocument();
+  expect(screen.queryByText('Checking authentication...')).not.toBeInTheDocument();
 });
 
 it('ignores private database results arriving after sign-out', async () => {

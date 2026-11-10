@@ -4,7 +4,6 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
-  linkWithPopup,
   signOut,
   type User,
 } from 'firebase/auth';
@@ -188,6 +187,7 @@ const App = () => {
   useEffect(() => onAuthStateChanged(auth, (user) => {
     setCurrentUser(user);
     setAuthReady(true);
+    setAuthError('');
     setSavedCourses({});
     setSavedEdits({});
     setSelectedCourses([]);
@@ -248,17 +248,11 @@ const App = () => {
     setAuthBusy(true);
     setAuthError('');
     try {
-      const provider = new GoogleAuthProvider();
-      if (auth.currentUser?.isAnonymous) {
-        await linkWithPopup(auth.currentUser, provider);
-      } else {
-        await signInWithPopup(auth, provider);
-      }
+      await signInWithPopup(auth, new GoogleAuthProvider());
+      setAuthReady(true);
+      setAuthError('');
     } catch (error) {
-      const code = (error as { code?: string }).code;
-      setAuthError(code === 'auth/credential-already-in-use'
-        ? 'That Google account already exists. Your anonymous courses have been retained. Sign out to use the existing account.'
-        : `Google sign-in failed: ${error instanceof Error ? error.message : 'Please try again.'}`);
+      setAuthError(`Google sign-in failed: ${error instanceof Error ? error.message : 'Please try again.'}`);
     } finally {
       setAuthBusy(false);
     }
@@ -269,6 +263,8 @@ const App = () => {
     setAuthError('');
     try {
       await signOut(auth);
+      setAuthReady(true);
+      setAuthError('');
     } catch (error) {
       setAuthError(`Sign-out failed: ${error instanceof Error ? error.message : 'Please try again.'}`);
     } finally {

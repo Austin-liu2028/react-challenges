@@ -1,4 +1,5 @@
 import type { User } from 'firebase/auth';
+import { isGoogleUser } from '../authentication';
 
 type AuthBannerProps = {
   user: User | null;
@@ -10,7 +11,7 @@ type AuthBannerProps = {
 };
 
 export const AuthBanner = ({ user, loading, busy, error, onSignIn, onSignOut }: AuthBannerProps) => {
-  const signedIn = Boolean(user && !user.isAnonymous);
+  const signedIn = isGoogleUser(user);
   const status = loading
     ? 'Checking authentication...'
     : signedIn
