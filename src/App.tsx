@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
 import {
   GoogleAuthProvider,
@@ -7,7 +7,7 @@ import {
   signOut,
   type User,
 } from 'firebase/auth';
-import { get, ref, set } from 'firebase/database';
+import { get, onValue, ref, set } from 'firebase/database';
 
 import { auth, db, realtimeDb } from './firebase';
 import { hasConflict } from './conflicts';
@@ -161,6 +161,11 @@ const getSavedCourseEdits = async (uid: string) => {
   );
 };
 
+// Temporary authorization diagnostics: Vite removes these branches in production.
+const authDebug = (event: string, details: unknown) => {
+  if (import.meta.env.DEV) console.debug(`[authorization] ${event}`, details);
+};
+
 const App = () => {
   const [catalog, setCatalog] = useState<Schedule | null>(null);
   const [savedCourses, setSavedCourses] = useState<Record<string, Course>>({});
@@ -172,6 +177,10 @@ const App = () => {
   const [authBusy, setAuthBusy] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [adminStatus, setAdminStatus] = useState<{ uid: string | null; isAdmin: boolean }>({
+    uid: null, isAdmin: false,
+  });
+  const isAdmin = currentUser !== null && adminStatus.uid === currentUser.uid && adminStatus.isAdmin;
   const [selectedTerm, setSelectedTerm] = useState<Term>('Fall');
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
   const [showPlan, setShowPlan] = useState(false);
@@ -184,10 +193,14 @@ const App = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
+  const observedUid = useRef<string | null | undefined>(undefined);
   useEffect(() => onAuthStateChanged(auth, (user) => {
+    authDebug('auth state', { uid: user?.uid ?? null, anonymous: user?.isAnonymous ?? false });
     setCurrentUser(user);
     setAuthReady(true);
     setAuthError('');
+    if (observedUid.current === (user?.uid ?? null)) return;
+    observedUid.current = user?.uid ?? null;
     setSavedCourses({});
     setSavedEdits({});
     setSelectedCourses([]);
@@ -195,6 +208,7 @@ const App = () => {
     setEditingCourseId(null);
     setFormError('');
   }, (error) => {
+    authDebug('auth error', { code: (error as Error & { code?: string }).code, message: error.message });
     setAuthError(error.message);
     setAuthReady(true);
   }), []);
@@ -272,7 +286,49 @@ const App = () => {
     }
   };
 
-  const canEdit = authReady && isGoogleUser(currentUser) && !authBusy;
+  const adminUid = currentUser?.uid ?? null;
+  const googleAuthenticated = isGoogleUser(currentUser);
+  useEffect(() => {
+    authDebug('admin lookup reset', { uid: adminUid, authReady, googleAuthenticated });
+    setAdminStatus({ uid: null, isAdmin: false });
+    if (!authReady || !googleAuthenticated || !adminUid || !realtimeDb) {
+      authDebug('admin lookup skipped', { uid: adminUid, databaseConfigured: Boolean(realtimeDb) });
+      return;
+    }
+    let active = true;
+    const uid = adminUid;
+    const adminRef = ref(realtimeDb, `admins/${uid}`);
+    authDebug('admin lookup', { uid, databaseURL: ref(realtimeDb).toString(), path: `admins/${uid}` });
+    const unsubscribe = onValue(adminRef, (snapshot) => {
+      authDebug('admin snapshot', { uid, exists: snapshot.exists(), value: snapshot.val(), active, liveUid: auth.currentUser?.uid ?? null });
+      if (active && auth.currentUser?.uid === uid) {
+        const administrator = snapshot.val() === true;
+        setAdminStatus({ uid, isAdmin: administrator });
+        if (!administrator) {
+          setShowForm(false);
+          setEditingCourseId(null);
+        }
+      }
+    }, (error) => {
+      authDebug('admin permission error', { uid, code: (error as Error & { code?: string }).code, message: error.message });
+      if (!active || auth.currentUser?.uid !== uid) return;
+      setAdminStatus({ uid: null, isAdmin: false });
+      setShowForm(false);
+      setEditingCourseId(null);
+      setDatabaseError(`Could not verify administrator access: ${error.message}`);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+      authDebug('admin lookup cleanup', { uid });
+    };
+  }, [authReady, adminUid, googleAuthenticated]);
+
+  const canAdd = authReady && isGoogleUser(currentUser) && !authBusy;
+  const canEdit = canAdd && isAdmin;
+  useEffect(() => {
+    authDebug('permissions', { uid: adminUid, roleUid: adminStatus.uid, isAdmin, canEdit, authReady, authBusy, googleAuthenticated });
+  }, [adminUid, adminStatus.uid, isAdmin, canEdit, authReady, authBusy, googleAuthenticated]);
 
   const courseList = useMemo(
     () => (schedule ? buildCourseList(schedule.courses) : []),
@@ -381,7 +437,7 @@ const App = () => {
   };
 
   const openAddForm = () => {
-    if (!canEdit) return;
+    if (!canAdd) return;
     setEditingCourseId(null);
     setFormValues(defaultFormState);
     setFormError('');
@@ -418,8 +474,8 @@ const App = () => {
     event.preventDefault();
     setFormError('');
 
-    if (!canEdit) {
-      setFormError('Sign in with Google to save courses.');
+    if (editingCourseId ? !canEdit : !canAdd) {
+      setFormError(editingCourseId ? 'Administrator access is required to edit courses.' : 'Sign in with Google to save courses.');
       return;
     }
 
@@ -475,6 +531,10 @@ const App = () => {
           );
         }
 
+        const administrator = await get(ref(realtimeDb, `admins/${uid}`));
+        if (administrator.val() !== true || auth.currentUser?.uid !== uid) {
+          throw new Error('Administrator access is required to edit courses.');
+        }
         await set(
           ref(realtimeDb, `users/${uid}/courseEdits/${editingCourseId}`),
           nextCourse
@@ -543,7 +603,7 @@ const App = () => {
         </div>
 
         <div className="flex gap-2">
-          {canEdit && (
+          {canAdd && (
           <button
             type="button"
             onClick={openAddForm}
@@ -657,7 +717,7 @@ const App = () => {
               <button
                 type="submit"
                 disabled={
-                  !canEdit ||
+                  (editingCourseId ? !canEdit : !canAdd) ||
                   isSubmitting ||
                   isLoading ||
                   Boolean(formValidationError) ||
